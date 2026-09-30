@@ -3,12 +3,17 @@
  *
  * Usage:
  *   /vizier            — the Vizier's full appraisal of the last turn (overlay)
- *   /vizier <prov/id>  — same, using an explicit model (e.g. "sparky/qwen-flash-next")
  *   /vizier on|off     — toggle auto mode: a one-line verdict after every agent turn
+ *   /vizier model      — pick the Vizier's model from the available models (persisted)
+ *   /vizier <prov/id>  — same, using an explicit model (e.g. "sparky/qwen-flash-next")
  *
- * Configure the Vizier's model via PI_VIZIER_MODEL (format "provider/modelId"),
- * e.g. in pi settings env: PI_VIZIER_MODEL=sparky/qwen-flash-next
+ * Model resolution order: per-invocation argument > PI_VIZIER_MODEL env > the
+ * persisted choice in ~/.pi/agent/vizier.json (format "provider/modelId").
  */
+
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 
 import { uuidv7 } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
@@ -100,9 +105,25 @@ const vizierPrompt = (user: string, assistant: string, brief: boolean): string =
 		"</what_the_agent_said_and_did>",
 	].join("\n");
 
-const resolveModel = (ctx: ExtensionCommandContext, explicit?: string) => {
-	const spec = explicit || process.env.PI_VIZIER_MODEL;
-	if (!spec) return { error: "No model set. Use `/vizier provider/modelId` or set PI_VIZIER_MODEL (e.g. sparky/qwen-flash-next)." };
+const configPath = path.join(os.homedir(), ".pi", "agent", "vizier.json");
+
+const loadPersistedModel = async (): Promise<string | undefined> => {
+	try {
+		const parsed = JSON.parse(await readFile(configPath, "utf8")) as { model?: unknown };
+		return typeof parsed.model === "string" && parsed.model ? parsed.model : undefined;
+	} catch {
+		return undefined;
+	}
+};
+
+const savePersistedModel = async (spec: string): Promise<void> => {
+	await mkdir(path.dirname(configPath), { recursive: true });
+	await writeFile(configPath, `${JSON.stringify({ model: spec }, null, 2)}\n`);
+};
+
+const resolveModel = async (ctx: ExtensionCommandContext, explicit?: string) => {
+	const spec = explicit || process.env.PI_VIZIER_MODEL || (await loadPersistedModel());
+	if (!spec) return { error: "No model set. Use `/vizier model` to pick one, or set PI_VIZIER_MODEL (e.g. sparky/qwen-flash-next)." };
 	const slash = spec.indexOf("/");
 	if (slash <= 0) return { error: `Model "${spec}" should look like provider/modelId.` };
 	const model = ctx.modelRegistry.find(spec.slice(0, slash), spec.slice(slash + 1));
@@ -120,7 +141,7 @@ const getViziersTake = async (
 	const turn = extractLastTurn(branch);
 	if (!turn) throw new Error("No assistant turn to appraise yet, sire.");
 
-	const resolved = resolveModel(ctx, modelSpec);
+	const resolved = await resolveModel(ctx, modelSpec);
 	if ("error" in resolved) throw new Error(resolved.error);
 
 	const response = await ctx.modelRegistry.complete(
@@ -165,13 +186,44 @@ export default function (pi: ExtensionAPI) {
 	let autoMode = false;
 	let inFlight = false;
 
+	const pickModel = async (ctx: ExtensionCommandContext, explicitSpec?: string) => {
+		if (explicitSpec) {
+			await savePersistedModel(explicitSpec);
+			ctx.ui.notify(`The Vizier shall speak through ${explicitSpec}.`, "info");
+			return;
+		}
+
+		const candidates = ctx.modelRegistry.getAvailable().filter((m) => ctx.modelRegistry.hasConfiguredAuth(m));
+		const labels = candidates.map((m) =>
+			m.name && m.name !== m.id ? `${m.provider}/${m.id} — ${m.name}` : `${m.provider}/${m.id}`,
+		);
+		if (labels.length === 0) {
+			ctx.ui.notify("No models with working credentials found, sire.", "warning");
+			return;
+		}
+		if (!ctx.hasUI) {
+			ctx.ui.notify(`Available models: ${labels.join(", ")} — use /vizier model provider/modelId`, "info");
+			return;
+		}
+
+		const choice = await ctx.ui.select("The Vizier's model", labels);
+		if (!choice) return;
+		const spec = choice.split(" — ")[0];
+		await savePersistedModel(spec);
+		ctx.ui.notify(`The Vizier shall speak through ${spec}.`, "info");
+	};
+
 	pi.registerCommand("vizier", {
-		description: "The Vizier appraises the agent's last turn (/vizier [model|on|off])",
+		description: "The Vizier appraises the agent's last turn (/vizier [on|off|model|provider/modelId])",
 		handler: async (args, ctx) => {
 			const arg = args?.trim();
 			if (arg === "on" || arg === "off") {
 				autoMode = arg === "on";
 				ctx.ui.notify(`Vizier mode ${arg}. ${autoMode ? "A whisper after every turn, sire." : "The court is dismissed."}`, "info");
+				return;
+			}
+			if (arg === "model" || arg?.startsWith("model ")) {
+				await pickModel(ctx, arg === "model" ? undefined : arg.slice("model ".length).trim() || undefined);
 				return;
 			}
 			try {

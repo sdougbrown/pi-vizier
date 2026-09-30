@@ -35,7 +35,12 @@ export PI_VIZIER_MODEL=provider/modelId
 | `/vizier` | Full appraisal of the agent's last turn, rendered in an overlay |
 | `/vizier on` | Auto mode: a one-line whispered verdict after every agent turn |
 | `/vizier off` | The court is dismissed |
+| `/vizier model` | Pick the Vizier's model from your available models (native picker, persisted) |
 | `/vizier provider/modelId` | Override the Vizier's brain for one appraisal |
+
+The picked model persists to `~/.pi/agent/vizier.json`. Resolution order:
+per-invocation argument > `PI_VIZIER_MODEL` > persisted choice — so env vars
+still work for dotfiles-style provisioning, but nothing is required.
 
 ## Sample output
 
