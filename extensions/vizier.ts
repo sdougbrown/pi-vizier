@@ -126,10 +126,17 @@ const resolveModel = async (ctx: ExtensionCommandContext, explicit?: string) => 
 	if (!spec) return { error: "No model set. Use `/vizier model` to pick one, or set PI_VIZIER_MODEL (e.g. sparky/qwen-flash-next)." };
 	const slash = spec.indexOf("/");
 	if (slash <= 0) return { error: `Model "${spec}" should look like provider/modelId.` };
-	const model = ctx.modelRegistry.find(spec.slice(0, slash), spec.slice(slash + 1));
-	if (!model) return { error: `Model ${spec} not found.` };
-	if (!ctx.modelRegistry.hasConfiguredAuth(model)) return { error: `No auth configured for ${spec}.` };
-	return { model };
+	const provider = spec.slice(0, slash);
+	const modelId = spec.slice(slash + 1);
+	// models.json providers register asynchronously; retry once after a refresh.
+	let model = ctx.modelRegistry.find(provider, modelId);
+	if (!model) {
+		await ctx.modelRegistry.refresh().catch(() => undefined);
+		model = ctx.modelRegistry.find(provider, modelId);
+	}
+	if (!model) return { error: `Model ${spec} not found — /vizier model to choose another.` };
+	if (!ctx.modelRegistry.hasConfiguredAuth(model)) return { error: `No auth configured for ${spec} — /vizier model to choose another.` };
+	return { model, spec };
 };
 
 /** SelectList showing at most this many rows before it scrolls internally. */
@@ -196,7 +203,7 @@ const getViziersTake = async (
 	ctx: ExtensionCommandContext,
 	modelSpec: string | undefined,
 	brief: boolean,
-): Promise<string> => {
+): Promise<{ text: string; spec: string }> => {
 	const branch = ctx.sessionManager.getBranch() as SessionEntry[];
 	const turn = extractLastTurn(branch);
 	if (!turn) throw new Error("No assistant turn to appraise yet, sire.");
@@ -216,10 +223,10 @@ const getViziersTake = async (
 		.join("\n")
 		.trim();
 	if (!text) throw new Error("The Vizier said nothing (empty response).");
-	return text;
+	return { text, spec: resolved.spec };
 };
 
-const showVizierUi = async (take: string, ctx: ExtensionCommandContext) => {
+const showVizierUi = async (take: string, spec: string, ctx: ExtensionCommandContext) => {
 	if (ctx.mode !== "tui") {
 		ctx.ui.notify(take, "info");
 		return;
@@ -228,7 +235,7 @@ const showVizierUi = async (take: string, ctx: ExtensionCommandContext) => {
 		const container = new Container();
 		const border = new DynamicBorder((s: string) => theme.fg("accent", s));
 		container.addChild(border);
-		container.addChild(new Text(theme.fg("accent", theme.bold("🐉 The Vizier's Take")), 1, 0));
+		container.addChild(new Text(theme.fg("accent", theme.bold(`🐉 The Vizier (${spec})`)), 1, 0));
 		container.addChild(new Markdown(take, 1, 1, getMarkdownTheme()));
 		container.addChild(new Text(theme.fg("dim", "Enter or Esc to dismiss"), 1, 0));
 		container.addChild(border);
@@ -284,7 +291,12 @@ export default function (pi: ExtensionAPI) {
 			const arg = args?.trim();
 			if (arg === "on" || arg === "off") {
 				autoMode = arg === "on";
-				ctx.ui.notify(`Vizier mode ${arg}. ${autoMode ? "A whisper after every turn, sire." : "The court is dismissed."}`, "info");
+				const current = await resolveModel(ctx).catch(() => undefined);
+				const voice = current && "spec" in current ? current.spec : "no model chosen yet — /vizier model";
+				ctx.ui.notify(
+					`Vizier mode ${arg} (speaking through ${voice}). ${autoMode ? "A whisper after every turn, sire." : "The court is dismissed."}`,
+					"info",
+				);
 				return;
 			}
 			if (arg === "model" || arg?.startsWith("model ")) {
@@ -293,9 +305,21 @@ export default function (pi: ExtensionAPI) {
 			}
 			try {
 				const take = await getViziersTake(ctx, arg || undefined, false);
-				await showVizierUi(take, ctx);
+				await showVizierUi(take.text, take.spec, ctx);
 			} catch (err) {
-				ctx.ui.notify(err instanceof Error ? err.message : String(err), "warning");
+				const msg = err instanceof Error ? err.message : String(err);
+				// Nothing chosen yet: open the picker instead of dead-ending, then retry once.
+				if (msg.startsWith("No model set") && ctx.hasUI) {
+					await pickModel(ctx, undefined);
+					try {
+						const take = await getViziersTake(ctx, undefined, false);
+						await showVizierUi(take.text, take.spec, ctx);
+					} catch (retryErr) {
+						ctx.ui.notify(retryErr instanceof Error ? retryErr.message : String(retryErr), "warning");
+					}
+					return;
+				}
+				ctx.ui.notify(msg, "warning");
 			}
 		},
 	});
