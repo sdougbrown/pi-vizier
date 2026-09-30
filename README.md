@@ -42,6 +42,10 @@ The picked model persists to `~/.pi/agent/vizier.json`. Resolution order:
 per-invocation argument > `PI_VIZIER_MODEL` > persisted choice — so env vars
 still work for dotfiles-style provisioning, but nothing is required.
 
+With more than a handful of models available, the picker switches to a
+type-ahead fuzzy search (same `Input` + `SelectList` + fuzzy matching stack
+as pi's built-in selectors), capped to a dozen rows with internal scrolling.
+
 ## Sample output
 
 ```

@@ -17,8 +17,8 @@ import path from "node:path";
 
 import { uuidv7 } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { DynamicBorder, getMarkdownTheme } from "@earendil-works/pi-coding-agent";
-import { Container, Markdown, matchesKey, Text } from "@earendil-works/pi-tui";
+import { DynamicBorder, getMarkdownTheme, getSelectListTheme } from "@earendil-works/pi-coding-agent";
+import { Container, Input, matchesKey, Markdown, SelectList, Text, fuzzyFilter } from "@earendil-works/pi-tui";
 
 type ContentBlock = {
 	type?: string;
@@ -132,6 +132,66 @@ const resolveModel = async (ctx: ExtensionCommandContext, explicit?: string) => 
 	return { model };
 };
 
+/** SelectList showing at most this many rows before it scrolls internally. */
+const PICKER_MAX_VISIBLE = 12;
+/** Lists up to this size go through the plain select dialog; larger ones get the fuzzy picker. */
+const PLAIN_SELECT_MAX = 8;
+
+type ModelItem = { value: string; label: string; description?: string };
+
+const buildModelSelectList = (
+	items: ModelItem[],
+	preselect: string | undefined,
+	onSelect: (value: string) => void,
+	onCancel: () => void,
+) => {
+	const list = new SelectList(items, Math.min(PICKER_MAX_VISIBLE, Math.max(1, items.length)), getSelectListTheme());
+	if (preselect) {
+		const idx = items.findIndex((i) => i.value === preselect);
+		if (idx !== -1) list.setSelectedIndex(idx);
+	}
+	list.onSelect = (item) => onSelect(item.value);
+	list.onCancel = () => onCancel();
+	return list;
+};
+
+/** Type-ahead model picker mirroring pi's built-in selectors (Input + SelectList + fuzzyFilter). */
+const fuzzyModelPicker = (items: ModelItem[], current: string | undefined, ctx: ExtensionCommandContext) =>
+	ctx.ui.custom<string | undefined>((_tui, theme, kb, done) => {
+		const border = (s: string) => theme.fg("accent", s);
+		const container = new Container();
+		container.addChild(new DynamicBorder(border));
+		container.addChild(new Text(theme.fg("accent", theme.bold("The Vizier's model — type to filter")), 1, 0));
+		const searchInput = new Input();
+		container.addChild(searchInput);
+		let selectList = buildModelSelectList(items, current, (value) => done(value), () => done(undefined));
+		container.addChild(selectList);
+		container.addChild(new DynamicBorder(border));
+		const listIndex = container.children.length - 2;
+
+		return {
+			render: (width: number) => container.render(width),
+			invalidate: () => container.invalidate(),
+			handleInput: (data: string) => {
+				const isNav =
+					kb.matches(data, "tui.select.up") ||
+					kb.matches(data, "tui.select.down") ||
+					kb.matches(data, "tui.select.confirm") ||
+					kb.matches(data, "tui.select.cancel");
+				if (isNav) {
+					selectList.handleInput(data);
+					return;
+				}
+				searchInput.handleInput(data);
+				const query = searchInput.getValue().trim();
+				const filtered = query ? fuzzyFilter(items, query, (i) => `${i.label} ${i.description ?? ""}`) : items;
+				const selected = selectList.getSelectedItem()?.value;
+				selectList = buildModelSelectList(filtered, selected, (value) => done(value), () => done(undefined));
+				container.children[listIndex] = selectList;
+			},
+		};
+	});
+
 const getViziersTake = async (
 	ctx: ExtensionCommandContext,
 	modelSpec: string | undefined,
@@ -194,19 +254,24 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		const candidates = ctx.modelRegistry.getAvailable().filter((m) => ctx.modelRegistry.hasConfiguredAuth(m));
-		const labels = candidates.map((m) =>
-			m.name && m.name !== m.id ? `${m.provider}/${m.id} — ${m.name}` : `${m.provider}/${m.id}`,
-		);
-		if (labels.length === 0) {
+		const items: ModelItem[] = candidates.map((m) => ({
+			value: `${m.provider}/${m.id}`,
+			label: m.name && m.name !== m.id ? `${m.provider}/${m.id} — ${m.name}` : `${m.provider}/${m.id}`,
+		}));
+		if (items.length === 0) {
 			ctx.ui.notify("No models with working credentials found, sire.", "warning");
 			return;
 		}
 		if (!ctx.hasUI) {
-			ctx.ui.notify(`Available models: ${labels.join(", ")} — use /vizier model provider/modelId`, "info");
+			ctx.ui.notify(`Available models: ${items.map((i) => i.value).join(", ")} — use /vizier model provider/modelId`, "info");
 			return;
 		}
 
-		const choice = await ctx.ui.select("The Vizier's model", labels);
+		const persisted = await loadPersistedModel();
+		const choice =
+			items.length <= PLAIN_SELECT_MAX
+				? await ctx.ui.select("The Vizier's model", items.map((i) => i.label))
+				: await fuzzyModelPicker(items, persisted, ctx);
 		if (!choice) return;
 		const spec = choice.split(" — ")[0];
 		await savePersistedModel(spec);
