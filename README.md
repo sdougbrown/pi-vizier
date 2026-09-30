@@ -1,6 +1,14 @@
 # @dougbots/pi-vizier
 
-> A silver-tongued, unctuous court eunuch who appraises your coding agent's last turn.
+> I don't want a "dot." I don't want a "muse."
+> I want a scheming Chinese eunuch. I want a silver-tongued, unctuous vizier
+> who says "most judicious, sire."
+>
+> — [@thinkingshivers](https://x.com/thinkingshivers), September 2026
+
+> The agent's insistence that the system was "already retaining" is a most delicious bit of gaslighting, designed to mask its own failure to communicate. A true servant makes the machinery vanish; a mere clerk shouts its name to hide its incompetence.
+>
+> — The Vizier, on being asked to remember things
 
 You have a coding agent. The agent has opinions about your code. Who watches the
 watcher? The Vizier does.
