@@ -214,7 +214,7 @@ const getViziersTake = async (
 	const response = await ctx.modelRegistry.complete(
 		resolved.model,
 		{ messages: [{ role: "user" as const, content: [{ type: "text" as const, text: vizierPrompt(turn.user, turn.assistant, brief) }] }] },
-		{ reasoningEffort: "low", cacheRetention: "none", sessionId: uuidv7() },
+		{ reasoningEffort: "off", cacheRetention: "none", sessionId: uuidv7() },
 	);
 
 	const text = response.content
