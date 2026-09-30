@@ -1,4 +1,4 @@
-# pi-vizier
+# @dougbots/pi-vizier
 
 > A silver-tongued, unctuous court eunuch who appraises your coding agent's last turn.
 
@@ -14,7 +14,7 @@ hedged, and what cost or alternative the agent glossed over.
 ## Install
 
 ```sh
-pi install npm:pi-vizier          # from npm
+pi install npm:@dougbots/pi-vizier               # from npm
 pi install git:github.com/sdougbrown/pi-vizier   # or straight from git
 ```
 
